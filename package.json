@@ -1,0 +1,12 @@
+{
+  "name": "swarm-board-viewer",
+  "version": "0.1.0",
+  "description": "board.jsonl を掲示板・タスク・関係図・コストで読む 1 ファイル HTML ビューア",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "build": "node tools/embed-sample.mjs",
+    "serve": "node --run-dev 2>/dev/null || npx --yes serve ."
+  },
+  "license": "MIT"
+}

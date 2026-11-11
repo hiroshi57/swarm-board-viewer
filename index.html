@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarm Board Viewer — AI の群れが掲示板で何をしたか</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161922; --panel2:#1c2029; --line:#262b36;
+    --fg:#e6e9ef; --dim:#8b93a7; --dim2:#5f6779;
+    --coordinator:#c084fc; --worker:#38bdf8; --verifier:#fbbf24; --human:#4ade80;
+    --pass:#34d399; --needs:#fbbf24; --fail:#f87171;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--fg);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif;
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  header{
+    display:flex;align-items:center;gap:16px;padding:10px 16px;
+    background:var(--panel);border-bottom:1px solid var(--line);flex:none;
+  }
+  header h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.02em}
+  header .sub{color:var(--dim2);font-size:12px}
+  .spacer{flex:1}
+  button,label.btn{
+    background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+    border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;font-family:inherit;
+  }
+  button:hover,label.btn:hover{background:#242938;border-color:#39415a}
+  button[aria-pressed="true"]{background:#2d3550;border-color:#4c5a8a;color:#fff}
+  input[type=file]{display:none}
+
+  main{flex:1;display:grid;grid-template-columns:260px 1fr 400px;min-height:0}
+  @media (max-width:1100px){main{grid-template-columns:1fr}}
+  .col{min-height:0;overflow:auto;border-right:1px solid var(--line)}
+  .col:last-child{border-right:none}
+  .pane-title{
+    position:sticky;top:0;background:var(--bg);padding:10px 14px 6px;
+    font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim2);
+    border-bottom:1px solid var(--line);z-index:5;
+  }
+
+  /* --- 左: タスク --- */
+  .task{margin:8px 10px;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;cursor:pointer}
+  .task:hover{border-color:#39415a}
+  .task.sel{border-color:#4c5a8a;background:var(--panel2)}
+  .task .tid{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .task .ts{font-size:13px;margin:2px 0 6px}
+  .task .meta{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .pill{font-size:10px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+  .pill.v-pass{color:var(--pass);border-color:#1e5c47}
+  .pill.v-needs_changes{color:var(--needs);border-color:#6b5117}
+  .pill.v-fail{color:var(--fail);border-color:#6b2626}
+  .pill.v-open{color:var(--dim2)}
+
+  /* --- 中央: 掲示板 --- */
+  .post{display:grid;grid-template-columns:72px 1fr;gap:12px;padding:12px 16px;border-bottom:1px solid #1b1f29}
+  .post:hover{background:#13161e}
+  .post.dim{opacity:.28}
+  .post .gutter{text-align:right;font-family:var(--mono);font-size:10px;color:var(--dim2);padding-top:3px}
+  .route{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;margin-bottom:3px}
+  .who{font-family:var(--mono);font-weight:600}
+  .arrow{color:var(--dim2)}
+  .type{font-family:var(--mono);font-size:10px;padding:1px 7px;border-radius:4px;background:#222735;color:var(--dim)}
+  .type.t-assign{background:#2b2342;color:#c4a8ff}
+  .type.t-done{background:#16344a;color:#7dd3fc}
+  .type.t-verify_result{background:#3a2f12;color:#fcd34d}
+  .type.t-abort{background:#3d1d1d;color:#fca5a5}
+  .type.t-note{background:#1e2a20;color:#86efac}
+  .verdict{font-family:var(--mono);font-size:10px;padding:1px 7px;border-radius:4px;font-weight:600}
+  .verdict.v-pass{background:#10402f;color:var(--pass)}
+  .verdict.v-needs_changes{background:#44340f;color:var(--needs)}
+  .verdict.v-fail{background:#45201f;color:var(--fail)}
+  .subj{font-weight:600;margin:1px 0}
+  .body{color:var(--dim);font-size:13px;white-space:pre-wrap;margin-top:3px}
+  .arts{margin-top:5px;display:flex;gap:6px;flex-wrap:wrap}
+  .art{font-family:var(--mono);font-size:10px;color:var(--dim2);background:#12151c;border:1px solid var(--line);border-radius:4px;padding:1px 6px}
+  .roundbar{
+    position:sticky;top:33px;background:linear-gradient(var(--bg),var(--bg) 70%,transparent);
+    padding:14px 16px 6px;font-size:11px;color:var(--dim2);letter-spacing:.06em;z-index:4;
+  }
+  .roundbar::after{content:"";display:block;height:1px;background:var(--line);margin-top:6px}
+
+  /* --- 右: 関係図と指標 --- */
+  #graph{width:100%;height:320px;display:block;background:var(--panel);border-bottom:1px solid var(--line)}
+  .kpis{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
+  .kpi{background:var(--bg);padding:11px 14px}
+  .kpi .k{font-size:10px;color:var(--dim2);letter-spacing:.06em;text-transform:uppercase}
+  .kpi .v{font-size:20px;font-weight:600;font-family:var(--mono);line-height:1.3}
+  .kpi .n{font-size:11px;color:var(--dim)}
+  .sec{padding:12px 14px;border-top:1px solid var(--line)}
+  .sec h3{margin:0 0 9px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim2);font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:3px 0;color:var(--dim)}
+  th{font-weight:500;color:var(--dim2);font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+  td.num{text-align:right;font-family:var(--mono);color:var(--fg)}
+  .bar{height:5px;border-radius:3px;background:#232838;overflow:hidden;margin-top:3px}
+  .bar>i{display:block;height:100%}
+  .note{font-size:11px;color:var(--dim2);margin-top:5px}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--dim);padding:8px 14px;border-bottom:1px solid var(--line)}
+  .legend span{display:flex;align-items:center;gap:5px}
+  .dot{width:8px;height:8px;border-radius:50%}
+  .warn{margin:10px 14px;padding:9px 11px;border-radius:7px;background:#2a1b1b;border:1px solid #5a2b2b;color:#fca5a5;font-size:12px}
+  .ok{margin:10px 14px;padding:9px 11px;border-radius:7px;background:#14291f;border:1px solid #27543c;color:#86efac;font-size:12px}
+  .drop{position:fixed;inset:0;background:rgba(15,17,21,.94);display:none;align-items:center;justify-content:center;z-index:50;font-size:16px;color:var(--dim)}
+  .drop.on{display:flex}
+  .empty{padding:40px 20px;text-align:center;color:var(--dim2)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Swarm Board Viewer</h1>
+  <span class="sub" id="src"></span>
+  <span class="spacer"></span>
+  <button id="tab-board" aria-pressed="true">掲示板</button>
+  <button id="tab-graph" aria-pressed="false">関係図</button>
+  <label class="btn">board.jsonl を開く<input type="file" id="file" accept=".jsonl,.json,.txt"></label>
+</header>
+
+<main>
+  <div class="col" id="tasks"></div>
+  <div class="col" id="feed"></div>
+  <div class="col" id="side"></div>
+</main>
+
+<div class="drop" id="drop">board.jsonl をドロップ</div>
+
+<!-- SAMPLE:BEGIN -->
+<script>
+// 同梱サンプル: swarm-board-core の mock デモ出力。tools/embed-sample.mjs が生成する。
+const SAMPLE_BOARD = "{\"seq\":1,\"id\":\"p_0001\",\"ts\":\"2026-11-11T05:00:33.504Z\",\"from\":\"@human\",\"to\":[],\"type\":\"note\",\"subject\":\"ミッション開始\",\"body\":\"nginx のアクセスログから攻撃を検知する集計ツールを作る\",\"meta\":{\"round\":0}}\n{\"seq\":2,\"id\":\"p_0002\",\"ts\":\"2026-11-11T05:00:33.508Z\",\"from\":\"@coordinator\",\"to\":[\"@worker-1\"],\"type\":\"assign\",\"subject\":\"集計ロジックの実装\",\"task_id\":\"T1\",\"ref\":\"p_0001\",\"body\":\"7 種類の集計を実装する。完了の判定基準: ユニットテストが全通過し、タイムゾーンを尊重すること。\",\"cost\":{\"model\":\"mock\",\"input_tokens\":367,\"output_tokens\":125,\"usd\":0},\"meta\":{\"round\":1}}\n{\"seq\":3,\"id\":\"p_0003\",\"ts\":\"2026-11-11T05:00:33.509Z\",\"from\":\"@coordinator\",\"to\":[\"@worker-2\"],\"type\":\"assign\",\"subject\":\"ログパーサとテストデータ\",\"task_id\":\"T2\",\"ref\":\"p_0001\",\"body\":\"combined / common 両形式のパーサと、攻撃を含むサンプルログ 500 行。判定基準: 全行パース成功、誤検知率 5% 未満。\",\"cost\":{\"model\":\"mock\",\"input_tokens\":367,\"output_tokens\":125,\"usd\":0},\"meta\":{\"round\":1}}\n{\"seq\":4,\"id\":\"p_0004\",\"ts\":\"2026-11-11T05:00:33.510Z\",\"from\":\"@coordinator\",\"to\":[\"@verifier\"],\"type\":\"assign\",\"subject\":\"受入基準の検証\",\"task_id\":\"T3\",\"ref\":\"p_0001\",\"body\":\"T1 / T2 の done を受けて検証する。主張を鵜呑みにせず、確かめ方まで見ること。\",\"cost\":{\"model\":\"mock\",\"input_tokens\":367,\"output_tokens\":125,\"usd\":0},\"meta\":{\"round\":1}}\n{\"seq\":5,\"id\":\"p_0005\",\"ts\":\"2026-11-11T05:00:33.512Z\",\"from\":\"@worker-1\",\"to\":[\"@verifier\"],\"type\":\"done\",\"subject\":\"7 集計を実装し、ユニットテスト 12 件が通過した\",\"task_id\":\"T1\",\"ref\":\"p_0002\",\"body\":\"しきい値は設定ファイルに外出しした。確かめ方: 固定データ 200 行に対して期待値を手計算し、12 ケースで突き合わせた。\",\"artifacts\":[{\"path\":\"src/aggregate.mjs\",\"kind\":\"file\"}],\"cost\":{\"model\":\"mock\",\"input_tokens\":456,\"output_tokens\":61,\"usd\":0},\"meta\":{\"round\":2}}\n{\"seq\":6,\"id\":\"p_0006\",\"ts\":\"2026-11-11T05:00:33.513Z\",\"from\":\"@worker-2\",\"to\":[\"@verifier\"],\"type\":\"done\",\"subject\":\"パーサとサンプルログ 500 行を用意した\",\"task_id\":\"T2\",\"ref\":\"p_0003\",\"body\":\"combined / common を自動判別。確かめ方: 500 行すべてパースし、既知の攻撃 19 件を手作業でラベル付けして突き合わせた。誤検知率 2.1%。\",\"artifacts\":[{\"path\":\"src/parse.mjs\",\"kind\":\"file\"},{\"path\":\"test/fixtures/access.log\",\"kind\":\"file\"}],\"cost\":{\"model\":\"mock\",\"input_tokens\":462,\"output_tokens\":77,\"usd\":0},\"meta\":{\"round\":2}}\n{\"seq\":7,\"id\":\"p_0007\",\"ts\":\"2026-11-11T05:00:33.515Z\",\"from\":\"@verifier\",\"to\":[\"@worker-1\",\"@coordinator\"],\"type\":\"verify_result\",\"subject\":\"時間帯別集計がタイムゾーンを無視している\",\"task_id\":\"T3\",\"ref\":\"p_0005\",\"body\":\"根拠: ログは +09:00 だが UTC として集計していた。深夜帯の総当たり検知が 9 時間ずれる。他 6 集計は基準を満たす。\",\"verdict\":\"needs_changes\",\"cost\":{\"model\":\"mock\",\"input_tokens\":565,\"output_tokens\":110,\"usd\":0},\"meta\":{\"round\":3}}\n{\"seq\":8,\"id\":\"p_0008\",\"ts\":\"2026-11-11T05:00:33.516Z\",\"from\":\"@verifier\",\"to\":[\"@worker-2\",\"@coordinator\"],\"type\":\"verify_result\",\"subject\":\"パーサとサンプルログは基準を満たす\",\"task_id\":\"T3\",\"ref\":\"p_0006\",\"body\":\"根拠: 500 行を再パースして件数一致を確認。誤検知率 2.1% は基準の 5% 未満。\",\"verdict\":\"pass\",\"cost\":{\"model\":\"mock\",\"input_tokens\":565,\"output_tokens\":110,\"usd\":0},\"meta\":{\"round\":3}}\n{\"seq\":9,\"id\":\"p_0009\",\"ts\":\"2026-11-11T05:00:33.518Z\",\"from\":\"@worker-1\",\"to\":[\"@verifier\"],\"type\":\"done\",\"subject\":\"タイムゾーンを修正し、回帰テストを追加した\",\"task_id\":\"T1\",\"ref\":\"p_0007\",\"body\":\"ログのオフセットを尊重するようにした。+09:00 / UTC / -05:00 の 3 ケースで回帰テストを追加し、計 15 件が通過。\",\"artifacts\":[{\"path\":\"src/aggregate.mjs\",\"kind\":\"file\"}],\"cost\":{\"model\":\"mock\",\"input_tokens\":632,\"output_tokens\":62,\"usd\":0},\"meta\":{\"round\":4}}\n{\"seq\":10,\"id\":\"p_0010\",\"ts\":\"2026-11-11T05:00:33.519Z\",\"from\":\"@verifier\",\"to\":[\"@coordinator\"],\"type\":\"verify_result\",\"subject\":\"修正を確認、全基準を満たす\",\"task_id\":\"T3\",\"ref\":\"p_0009\",\"body\":\"根拠: 3 タイムゾーンそれぞれで深夜帯の総当たりを検知できることを再実行で確認した。\",\"verdict\":\"pass\",\"cost\":{\"model\":\"mock\",\"input_tokens\":650,\"output_tokens\":46,\"usd\":0},\"meta\":{\"round\":5}}\n{\"seq\":11,\"id\":\"p_0011\",\"ts\":\"2026-11-11T05:00:33.521Z\",\"from\":\"@coordinator\",\"to\":[],\"type\":\"done\",\"subject\":\"ミッション完了\",\"body\":\"T1 / T2 とも verifier の pass を得た。人間の入力は 1 回のみ。\",\"cost\":{\"model\":\"mock\",\"input_tokens\":716,\"output_tokens\":28,\"usd\":0},\"meta\":{\"round\":6}}\n";
+</script>
+<!-- SAMPLE:END -->
+
+<script>
+// ============================================================
+// Swarm Board Viewer — 依存ゼロ・1 ファイル
+//
+// board.jsonl（Swarm Board Protocol v0.1）を読んで、
+// 掲示板・タスク・エージェント関係図・コスト・プロトコル健全性を 1 画面で見る。
+//
+// 読み込むボードは信用しない。表示はすべて esc() を通し、
+// class 名に使う値はホワイトリスト化した slug にしてから入れる。
+// ============================================================
+
+'use strict';
+
+const ROLE_COLOR = { coordinator:'#c084fc', worker:'#38bdf8', verifier:'#fbbf24', human:'#4ade80', unknown:'#6b7280' };
+const KNOWN_TYPES = ['assign','progress','question','answer','handoff','done','verify_request','verify_result','blocked','abort','note'];
+const KNOWN_VERDICTS = ['pass','needs_changes','fail'];
+const VERDICT_LABEL = { pass:'合格', needs_changes:'差し戻し', fail:'不合格', open:'進行中' };
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/** class 属性に入れてよい形だけを許す。未知の値は 'other' に畳む */
+const typeSlug    = t => KNOWN_TYPES.includes(t) ? 't-' + t : 't-other';
+const verdictSlug = v => KNOWN_VERDICTS.includes(v) ? 'v-' + v : (v === 'open' ? 'v-open' : 'v-other');
+
+function roleOf(name){
+  if (typeof name !== 'string' || !name.startsWith('@')) return 'unknown';
+  const n = name.slice(1).toLowerCase();
+  if (n === 'coordinator' || n.startsWith('coordinator-')) return 'coordinator';
+  if (n === 'verifier'    || n.startsWith('verifier-'))    return 'verifier';
+  if (n === 'worker'      || n.startsWith('worker-'))      return 'worker';
+  if (n === 'human') return 'human';
+  return 'unknown';
+}
+const who = n => '<span class="who" style="color:' + ROLE_COLOR[roleOf(n)] + '">' + esc(n) + '</span>';
+
+function parseBoard(text){
+  const posts = [], bad = [];
+  String(text).split(/\r?\n/).forEach((line, i) => {
+    const t = line.trim();
+    if (!t) return;
+    try {
+      const o = JSON.parse(t);
+      if (o && typeof o === 'object' && !Array.isArray(o)) posts.push(o);
+      else bad.push({ line: i + 1, why: 'オブジェクトではありません' });
+    } catch (e) { bad.push({ line: i + 1, why: e.message }); }
+  });
+  posts.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  return { posts, bad };
+}
+
+/**
+ * 各投稿にラウンドを振る。
+ *
+ * swarm-board-core は meta.round に実際のラウンドを書くので、あればそれを使う。
+ * 他のツールが作ったボードには無いので、その場合だけ
+ * 「同じ送り手がもう一度出てきたら次のラウンド」で推定する（あくまで目安）。
+ */
+function assignRounds(posts){
+  const recorded = posts.filter(p => p.meta && Number.isFinite(p.meta.round));
+  if (recorded.length === posts.length && posts.length > 0){
+    // 記録された値をそのまま使わず、出現順の 0 始まりに詰め直す
+    const order = [...new Set(posts.map(p => p.meta.round))].sort((a,b) => a - b);
+    const rank = new Map(order.map((r, i) => [r, i]));
+    return posts.map(p => Object.assign({}, p, { __round: rank.get(p.meta.round), __roundExact: true }));
+  }
+  let round = 0, seen = new Set();
+  return posts.map(p => {
+    if (seen.has(p.from)) { round++; seen = new Set(); }
+    seen.add(p.from);
+    return Object.assign({}, p, { __round: round, __roundExact: false });
+  });
+}
+
+function analyze(posts){
+  const agents = new Map(), edges = new Map(), byType = {}, verdicts = {};
+  let usd = 0, inTok = 0, outTok = 0;
+  const touch = n => {
+    if (!agents.has(n)) agents.set(n, { name:n, role:roleOf(n), sent:0, received:0, usd:0, tokens:0 });
+    return agents.get(n);
+  };
+  for (const p of posts){
+    byType[p.type] = (byType[p.type] ?? 0) + 1;
+    if (p.type === 'verify_result') verdicts[p.verdict] = (verdicts[p.verdict] ?? 0) + 1;
+    const a = touch(p.from); a.sent++;
+    if (p.cost){
+      const u = Number(p.cost.usd) || 0, i = Number(p.cost.input_tokens) || 0, o = Number(p.cost.output_tokens) || 0;
+      usd += u; inTok += i; outTok += o; a.usd += u; a.tokens += i + o;
+    }
+    for (const to of (Array.isArray(p.to) ? p.to : [])){
+      touch(to).received++;
+      const k = p.from + '\u0000' + to;
+      edges.set(k, (edges.get(k) ?? 0) + 1);
+    }
+  }
+  const ts = posts.map(p => Date.parse(p.ts)).filter(n => !Number.isNaN(n));
+  return {
+    agents: [...agents.values()].sort((a,b) => (b.sent + b.received) - (a.sent + a.received)),
+    edges: [...edges.entries()].map(([k,count]) => { const parts = k.split('\u0000'); return { from:parts[0], to:parts[1], count }; }),
+    byType, verdicts,
+    cost: { usd, inTok, outTok },
+    rounds: posts.length ? posts[posts.length-1].__round + 1 : 0,
+    durationMs: ts.length > 1 ? Math.max.apply(null, ts) - Math.min.apply(null, ts) : 0,
+  };
+}
+
+/** 掲示板からタスクを組み立てる。assign が起点、verify_result が終点 */
+function buildTasks(posts){
+  const map = new Map();
+  const touch = id => {
+    if (!map.has(id)) map.set(id, { id, subject:'', owners:new Set(), posts:[], verdict:null, attempts:0 });
+    return map.get(id);
+  };
+  for (const p of posts){
+    if (!p.task_id) continue;
+    const t = touch(p.task_id);
+    t.posts.push(p);
+    if (p.type === 'assign'){
+      if (!t.subject) t.subject = p.subject;
+      for (const to of (p.to ?? [])) if (roleOf(to) === 'worker') t.owners.add(to);
+    }
+    if (p.type === 'done') t.attempts++;
+  }
+  // verify_result は検証役自身の task_id を名乗ることがある。
+  // ref を辿って「検証された側」のタスクに合否を寄せる。
+  const byId = new Map(posts.map(p => [p.id, p]));
+  for (const p of posts){
+    if (p.type !== 'verify_result') continue;
+    const target = p.ref ? byId.get(p.ref) : null;
+    const tid = target && target.task_id ? target.task_id : p.task_id;
+    if (!tid) continue;
+    const t = touch(tid);
+    t.verdict = p.verdict;
+    if (!t.posts.includes(p)) t.posts.push(p);
+  }
+  // 検証役自身にしか現れないタスク（assign だけで done が無い）は一覧から省く
+  return [...map.values()].filter(t => t.attempts > 0 || t.owners.size > 0 || t.verdict);
+}
+
+// ---------- 状態 ----------
+let POSTS = [], TASKS = [], STATS = null, SELECTED = null, VIEW = 'board';
+
+function load(text, label){
+  const parsed = parseBoard(text);
+  POSTS = assignRounds(parsed.posts);
+  TASKS = buildTasks(POSTS);
+  STATS = analyze(POSTS);
+  STATS.bad = parsed.bad;
+  SELECTED = null;
+  document.getElementById('src').textContent = label + ' — ' + POSTS.length + ' 投稿';
+  render();
+}
+
+function render(){ renderTasks(); renderFeed(); renderSide(); }
+
+function renderTasks(){
+  const el = document.getElementById('tasks');
+  if (!TASKS.length){
+    el.innerHTML = '<div class="pane-title">タスク</div><div class="empty">task_id つきの投稿がありません</div>';
+    return;
+  }
+  el.innerHTML = '<div class="pane-title">タスク (' + TASKS.length + ')</div>' + TASKS.map(t => {
+    const v = t.verdict || 'open';
+    const label = VERDICT_LABEL[v] || v;
+    return '<div class="task' + (SELECTED === t.id ? ' sel' : '') + '" data-task="' + esc(t.id) + '">'
+      + '<div class="tid">' + esc(t.id) + '</div>'
+      + '<div class="ts">' + esc(t.subject || '(assign なし)') + '</div>'
+      + '<div class="meta">'
+      + '<span class="pill ' + verdictSlug(v) + '">' + esc(label) + '</span>'
+      + [...t.owners].map(o => '<span class="pill">' + esc(o) + '</span>').join('')
+      + (t.attempts > 1 ? '<span class="pill">' + t.attempts + ' 回目</span>' : '')
+      + '</div></div>';
+  }).join('');
+  el.querySelectorAll('.task').forEach(n => {
+    n.onclick = () => { SELECTED = SELECTED === n.dataset.task ? null : n.dataset.task; render(); };
+  });
+}
+
+function renderFeed(){
+  const el = document.getElementById('feed');
+  if (VIEW === 'graph'){
+    el.innerHTML = '';
+    return;
+  }
+  if (!POSTS.length){
+    el.innerHTML = '<div class="pane-title">掲示板</div><div class="empty">board.jsonl を開いてください</div>';
+    return;
+  }
+
+  let html = '<div class="pane-title">掲示板' + (SELECTED ? '（' + esc(SELECTED) + ' を強調）' : '') + '</div>';
+  let round = -1;
+  for (const p of POSTS){
+    if (p.__round !== round){
+      round = p.__round;
+      html += '<div class="roundbar">ラウンド ' + (round + 1) + (p.__roundExact ? '' : '（推定）') + '</div>';
+    }
+    const dim = SELECTED && p.task_id !== SELECTED;
+    const tos = Array.isArray(p.to) ? p.to : [];
+    const to = tos.length ? tos.map(who).join(', ') : '<span class="arrow">全員</span>';
+    html += '<div class="post' + (dim ? ' dim' : '') + '">'
+      + '<div class="gutter">' + esc(p.id) + '</div><div>'
+      + '<div class="route">' + who(p.from) + '<span class="arrow">→</span>' + to
+      + '<span class="type ' + typeSlug(p.type) + '">' + esc(p.type) + '</span>'
+      + (p.verdict ? '<span class="verdict ' + verdictSlug(p.verdict) + '">' + esc(p.verdict) + '</span>' : '')
+      + (p.task_id ? '<span class="pill">' + esc(p.task_id) + '</span>' : '')
+      + (p.ref ? '<span class="pill">↩ ' + esc(p.ref) + '</span>' : '')
+      + '</div>'
+      + '<div class="subj">' + esc(p.subject) + '</div>'
+      + (p.body ? '<div class="body">' + esc(p.body) + '</div>' : '')
+      + (Array.isArray(p.artifacts) && p.artifacts.length
+          ? '<div class="arts">' + p.artifacts.map(a => '<span class="art">' + esc(a && a.path) + '</span>').join('') + '</div>'
+          : '')
+      + '</div></div>';
+  }
+  el.innerHTML = html;
+}
+
+function renderSide(){
+  const el = document.getElementById('side');
+  if (!STATS){ el.innerHTML = ''; return; }
+  const s = STATS;
+  const mins = s.durationMs / 60000;
+  const vTotal = Object.values(s.verdicts).reduce((a,b) => a + b, 0);
+  const passRate = vTotal ? Math.round(((s.verdicts.pass ?? 0) / vTotal) * 100) : null;
+  const nWorker = s.agents.filter(a => a.role === 'worker').length;
+  const nVerifier = s.agents.filter(a => a.role === 'verifier').length;
+
+  const kpi = (k, v, n) => '<div class="kpi"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div><div class="n">' + esc(n ?? '') + '</div></div>';
+
+  let html = '<div class="pane-title">関係図</div>'
+    + '<canvas id="graph"></canvas>'
+    + '<div class="legend">'
+    + Object.keys(ROLE_COLOR).filter(r => r !== 'unknown')
+        .map(r => '<span><i class="dot" style="background:' + ROLE_COLOR[r] + '"></i>' + r + '</span>').join('')
+    + '</div>'
+    + '<div class="kpis">'
+    + kpi('エージェント', s.agents.length, nWorker + ' worker / ' + nVerifier + ' verifier')
+    + kpi('ラウンド', s.rounds, POSTS.length + ' 投稿')
+    + kpi('コスト', '$' + s.cost.usd.toFixed(3), ((s.cost.inTok + s.cost.outTok) / 1000).toFixed(1) + 'k tokens')
+    + kpi('所要', mins >= 1 ? mins.toFixed(1) + ' 分' : Math.round(s.durationMs / 1000) + ' 秒', '人間の入力 1 回')
+    + '</div>';
+
+  if (vTotal){
+    html += '<div class="sec"><h3>検証</h3><table>'
+      + '<tr><td>一発合格率</td><td class="num">' + passRate + '%</td></tr>'
+      + Object.keys(s.verdicts).map(v =>
+          '<tr><td><span class="pill ' + verdictSlug(v) + '">' + esc(v) + '</span></td><td class="num">' + s.verdicts[v] + '</td></tr>').join('')
+      + '</table>'
+      + '<div class="bar"><i style="width:' + passRate + '%;background:var(--pass)"></i></div>'
+      + '<div class="note">'
+      + (passRate === 100 ? '差し戻しゼロ。受入基準が緩すぎないか確認する価値がある。'
+         : passRate >= 50 ? '差し戻しが機能している。verifier が仕事をしている証拠。'
+         : '差し戻しが多い。タスク分解か受入基準の書き方を見直す。')
+      + '</div></div>';
+  }
+
+  const maxAct = Math.max(1, ...s.agents.map(a => a.sent + a.received));
+  html += '<div class="sec"><h3>エージェント</h3><table>'
+    + '<tr><th>名前</th><th>役割</th><th style="text-align:right">送</th><th style="text-align:right">受</th><th style="text-align:right">$</th></tr>'
+    + s.agents.map(a =>
+        '<tr><td style="color:' + ROLE_COLOR[a.role] + ';font-family:var(--mono)">' + esc(a.name) + '</td>'
+        + '<td>' + esc(a.role) + '</td><td class="num">' + a.sent + '</td><td class="num">' + a.received + '</td>'
+        + '<td class="num">' + (a.usd ? a.usd.toFixed(3) : '–') + '</td></tr>'
+        + '<tr><td colspan="5"><div class="bar"><i style="width:' + (((a.sent + a.received) / maxAct) * 100) + '%;background:' + ROLE_COLOR[a.role] + '"></i></div></td></tr>'
+      ).join('')
+    + '</table></div>';
+
+  html += '<div class="sec"><h3>受け渡し</h3><table>'
+    + s.edges.slice().sort((a,b) => b.count - a.count).map(e =>
+        '<tr><td>' + who(e.from) + ' → ' + who(e.to) + '</td><td class="num">×' + e.count + '</td></tr>').join('')
+    + '</table></div>';
+
+  html += '<div class="sec"><h3>投稿の内訳</h3><table>'
+    + Object.keys(s.byType).sort((a,b) => s.byType[b] - s.byType[a]).map(t =>
+        '<tr><td><span class="type ' + typeSlug(t) + '">' + esc(t) + '</span></td><td class="num">' + s.byType[t] + '</td></tr>').join('')
+    + '</table></div>';
+
+  const issues = checkProtocol(POSTS);
+  html += issues.length
+    ? '<div class="warn"><b>プロトコル違反 ' + issues.length + ' 件</b><br>' + issues.slice(0, 6).map(esc).join('<br>') + '</div>'
+    : '<div class="ok">プロトコル違反なし。自己検証・権限逸脱・検証を経ない完了のいずれも検出されませんでした。</div>';
+
+  if (s.bad && s.bad.length) html += '<div class="warn">読めなかった行: ' + s.bad.length + '</div>';
+
+  el.innerHTML = html;
+  drawGraph();
+}
+
+/** ビューア側でも最小限の不変条件を見る（検証器が手元に無くても気づけるように） */
+function checkProtocol(posts){
+  const out = [], byId = new Map(posts.map(p => [p.id, p]));
+  posts.forEach((p, i) => {
+    if (p.seq !== i + 1) out.push(p.id + ': seq が連番でない');
+    if ((p.type === 'assign' || p.type === 'abort') && ['coordinator','human'].indexOf(roleOf(p.from)) < 0)
+      out.push(p.id + ': ' + roleOf(p.from) + ' が ' + p.type + ' を出している');
+    if (p.type === 'verify_result'){
+      if (roleOf(p.from) !== 'verifier') out.push(p.id + ': verifier 以外が合否を出している');
+      const target = p.ref ? byId.get(p.ref) : null;
+      if (target && target.from === p.from) out.push(p.id + ': 自分の投稿を自分で検証している');
+    }
+    if (p.type === 'done' && roleOf(p.from) === 'worker'
+        && !(Array.isArray(p.to) ? p.to : []).some(t => roleOf(t) === 'verifier'))
+      out.push(p.id + ': worker の done が verifier に渡っていない');
+  });
+  return out;
+}
+
+// ---------- 関係図（力学配置・canvas・依存ゼロ） ----------
+function drawGraph(){
+  const cv = document.getElementById('graph');
+  if (!cv || !STATS) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // 役割ごとに縦の層を作ると coordinator → worker → verifier の流れが読める
+  const layer = { coordinator:0.20, human:0.20, worker:0.52, verifier:0.84, unknown:0.5 };
+  const nodes = STATS.agents.map((a, i, arr) => ({
+    name:a.name, role:a.role,
+    x: W * (0.18 + 0.64 * ((i + 0.5) / arr.length)),
+    y: H * layer[a.role],
+    vx:0, vy:0,
+    r: 9 + Math.min(10, (a.sent + a.received) * 0.8),
+  }));
+  const idx = new Map(nodes.map((n, i) => [n.name, i]));
+  const links = STATS.edges.filter(e => idx.has(e.from) && idx.has(e.to))
+    .map(e => ({ s: idx.get(e.from), t: idx.get(e.to), c: e.count }));
+
+  // 決定論的に固定回数だけ緩和する（同じボードなら毎回同じ図になる）
+  for (let step = 0; step < 220; step++){
+    for (let i = 0; i < nodes.length; i++){
+      for (let j = i + 1; j < nodes.length; j++){
+        const a = nodes[i], b = nodes[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d2 = dx*dx + dy*dy || 1, d = Math.sqrt(d2);
+        const f = 2600 / d2;
+        a.vx -= f * dx / d; a.vy -= f * dy / d;
+        b.vx += f * dx / d; b.vy += f * dy / d;
+      }
+    }
+    for (const l of links){
+      const a = nodes[l.s], b = nodes[l.t];
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+      const f = (d - 110) * 0.012;
+      a.vx += f * dx / d; a.vy += f * dy / d;
+      b.vx -= f * dx / d; b.vy -= f * dy / d;
+    }
+    for (const n of nodes){
+      n.vy += (H * layer[n.role] - n.y) * 0.06;
+      n.vx += (W / 2 - n.x) * 0.004;
+      n.vx *= 0.82; n.vy *= 0.82;
+      n.x += n.vx; n.y += n.vy;
+      n.x = Math.max(n.r + 16, Math.min(W - n.r - 16, n.x));
+      n.y = Math.max(n.r + 16, Math.min(H - n.r - 18, n.y));
+    }
+  }
+
+  ctx.clearRect(0, 0, W, H);
+  const maxC = Math.max(1, ...links.map(l => l.c));
+  for (const l of links){
+    const a = nodes[l.s], b = nodes[l.t];
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+    const ux = dx / d, uy = dy / d;
+    const sx = a.x + ux * a.r, sy = a.y + uy * a.r;
+    const ex = b.x - ux * (b.r + 7), ey = b.y - uy * (b.r + 7);
+    // 往復を見分けるため少しだけ湾曲させる
+    const mx = (sx + ex) / 2 - uy * 18, my = (sy + ey) / 2 + ux * 18;
+    ctx.strokeStyle = ROLE_COLOR[a.role] + '66';
+    ctx.lineWidth = 1 + (l.c / maxC) * 3;
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.quadraticCurveTo(mx, my, ex, ey); ctx.stroke();
+    const ang = Math.atan2(ey - my, ex - mx);
+    ctx.fillStyle = ROLE_COLOR[a.role] + 'cc';
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - 8 * Math.cos(ang - 0.4), ey - 8 * Math.sin(ang - 0.4));
+    ctx.lineTo(ex - 8 * Math.cos(ang + 0.4), ey - 8 * Math.sin(ang + 0.4));
+    ctx.closePath(); ctx.fill();
+    if (l.c > 1){
+      ctx.fillStyle = '#8b93a7'; ctx.font = '10px ui-monospace,monospace'; ctx.textAlign = 'center';
+      ctx.fillText('×' + l.c, mx, my - 2);
+    }
+  }
+  for (const n of nodes){
+    ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+    ctx.fillStyle = ROLE_COLOR[n.role] + '33'; ctx.fill();
+    ctx.strokeStyle = ROLE_COLOR[n.role]; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.fillStyle = '#e6e9ef'; ctx.font = '11px ui-monospace,monospace'; ctx.textAlign = 'center';
+    ctx.fillText(n.name, n.x, n.y + n.r + 13);
+  }
+}
+
+// ---------- 入出力 ----------
+document.getElementById('file').onchange = e => {
+  const f = e.target.files[0];
+  if (f) f.text().then(t => load(t, f.name));
+};
+const drop = document.getElementById('drop');
+addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('on'); });
+addEventListener('dragleave', e => { if (e.relatedTarget === null) drop.classList.remove('on'); });
+addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('on');
+  const f = e.dataTransfer.files[0];
+  if (f) f.text().then(t => load(t, f.name));
+});
+addEventListener('resize', () => { if (STATS) drawGraph(); });
+
+function setView(v){
+  VIEW = v;
+  document.getElementById('tab-board').setAttribute('aria-pressed', String(v === 'board'));
+  document.getElementById('tab-graph').setAttribute('aria-pressed', String(v === 'graph'));
+  document.querySelector('main').style.gridTemplateColumns = v === 'graph' ? '260px 0 1fr' : '260px 1fr 400px';
+  render();
+}
+document.getElementById('tab-board').onclick = () => setView('board');
+document.getElementById('tab-graph').onclick = () => setView('graph');
+
+// ?board=<url> があれば取りに行く。無ければ同梱サンプル
+const boardUrl = new URLSearchParams(location.search).get('board');
+if (boardUrl){
+  fetch(boardUrl).then(r => r.text()).then(t => load(t, boardUrl))
+    .catch(() => load(SAMPLE_BOARD, 'サンプル（指定された board を読めませんでした）'));
+} else {
+  load(SAMPLE_BOARD, 'サンプル');
+}
+</script>
+</body>
+</html>
